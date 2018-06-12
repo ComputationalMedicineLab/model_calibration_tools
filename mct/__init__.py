@@ -62,9 +62,9 @@ def kde_calibration_curve(probs, actual,
 
 def _score(kde, train, x_axis):
     kde = clone(kde)
-    kde.fit(samples.reshape(-1, 1))
+    kde.fit(train.reshape(-1, 1))
     scores = kde.score_samples(x_axis.reshape(-1, 1))
     # Scores has been normalized so that the area under np.exp(scores) is equal
     # to one, but since we're using this to generate another curve, we need to
     # de-normalize the curve
-    return np.exp(scores) * len(samples)
+    return np.exp(scores) * len(train)
