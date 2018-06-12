@@ -1,0 +1,7 @@
+# Bytecode and Artifacts
+*.py[co]
+**/__pycache__/
+**/.ipynb_checkpoints/
+
+# Development tooling
+tags
