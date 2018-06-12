@@ -25,6 +25,7 @@ setup(
     url='https://github.com/ComputationalMedicineLab/model_calibration_tools',
     packages=find_packages(exclude=('tests',)),
     install_requires=[
+        'numpy',
         'scikit-learn',
     ],
     include_package_data=True,
