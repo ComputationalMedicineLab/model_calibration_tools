@@ -1,10 +1,7 @@
 #! /usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import io
 from os.path import abspath, dirname, join
-
-from setuptools import find_packages, setup
+from setuptools import setup
 
 __version__ = '0.1'
 
@@ -23,10 +20,13 @@ setup(
     author_email='john.m.still@vumc.org',
     python_requires='>=3.6.0',
     url='https://github.com/ComputationalMedicineLab/model_calibration_tools',
-    packages=find_packages(exclude=('tests',)),
+    py_modules=['mct'],
     install_requires=[
         'numpy',
         'scikit-learn',
+        # required by the sklearn module we're using, but not a hard
+        # requirement for sklearn
+        'scipy',
     ],
     include_package_data=True,
     license='BSD',
