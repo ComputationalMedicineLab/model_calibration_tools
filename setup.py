@@ -28,6 +28,9 @@ setup(
         # requirement for sklearn
         'scipy',
     ],
+    extras_require={
+        'viz': ['matplotlib']
+    },
     include_package_data=True,
     license='BSD',
     classifiers=[
