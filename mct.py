@@ -122,6 +122,8 @@ def plot_kde_calibration_curve(curve,
         lines.extend(ax.plot(x_axis, y_true, 'C1', alpha=0.4, label='True'))
         lines.extend(ax.plot(x_axis, y_total, 'C2', alpha=0.4, label='Total'))
     ax.legend(lines, [li.get_label() for li in lines], loc='best')
+    ax.set_xlabel('Probability')
+    ax.set_ylabel('Percentage Actual')
     if label is not None:
         ax.set_title(f'{label}')
     return ax
@@ -163,6 +165,7 @@ def display_calibration(probs, actual,
         ax=ax1,
         bins=bins,
     )
+    ax1.set_xlabel('')
     ax2 = plot_histograms(
         *histograms(probs, actual, bins=bins),
         ax=ax2
