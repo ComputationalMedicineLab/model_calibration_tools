@@ -27,10 +27,9 @@ setup(
         # required by the sklearn module we're using, but not a hard
         # requirement for sklearn
         'scipy',
+        # required for plotting / charting etc
+        'matplotlib',
     ],
-    extras_require={
-        'viz': ['matplotlib']
-    },
     include_package_data=True,
     license='BSD',
     classifiers=[
