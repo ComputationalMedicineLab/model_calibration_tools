@@ -65,16 +65,16 @@ ExampleUsage notebook.  The axes object is returned.
 plot_calibration_curve(x_values, calibration, pos_intensity=None, all_intensity=None, *, label=None, ax=None) -> Axes
 ```
  Plots the three curves vs. `x_values` on the given axes. For examples please refer to the ExampleUsage notebook.  The axes
-object is returned. `ax` is as in `plot_histograms`. 
+object is returned. `ax` is as in `plot_histograms`.
 
 
 ```python
-display_calibration(probs, actual, *, figure=None, bins=100, label=None, kernel='gaussian', bandwidth=0.1, include_intensities=False) -> Figure
+display_calibration(probs, actual, *, figure=None, bins=100, label=None, kernel='gaussian', bandwidth=0.1, ici=True, include_intensities=False) -> Figure
 ```
 This function is a convenience function that runs the whole pipeline and
 produces a [matplotlib Figure][figure].  If `figure` is not provided we attempt
 to find one using [`pyplot.gcf()`][gcf].  If `include_intensities` is True,
-intensities are plotted with the calibration curve.  The
+intensities are plotted with the calibration curve.  If `ici` is true, the ICI is added to the legend. The
 histograms are plotted below the calibration curves.  For examples please see
 the accompanying ExampleUsage notebook.  The figure is returned.
 

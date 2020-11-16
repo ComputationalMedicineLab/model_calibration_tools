@@ -20,7 +20,9 @@ def histograms(probs, actual, bins=100):
     return top, bot, edges, step
 
 
-def kde_calibration_curve(probs, actual, resolution=0.01,
+def kde_calibration_curve(probs,
+                          actual,
+                          resolution=0.01,
                           kernel='gaussian',
                           bandwidth=0.1):
     """
@@ -49,13 +51,14 @@ def kde_calibration_curve(probs, actual, resolution=0.01,
     all_intensity = np.exp(all_density) * len(probs)
 
     # Now the estimated fraction is the ratio of positives to all
-    return (x_values, pos_intensity / all_intensity, pos_intensity, all_intensity)
+    return (x_values, pos_intensity / all_intensity, pos_intensity,
+            all_intensity)
 
 
-def compute_iqi(x_values, calibration, all_intensity):
-    iqi = np.sum(all_intensity * np.abs(calibration - x_values)) / \
+def compute_ici(x_values, calibration, all_intensity):
+    ici = np.sum(all_intensity * np.abs(calibration - x_values)) / \
         np.sum(all_intensity)
-    return iqi
+    return ici
 
 
 def plot_histograms(top, bot, edges, resolution, *, ax=None):
@@ -67,8 +70,12 @@ def plot_histograms(top, bot, edges, resolution, *, ax=None):
     if ax is None:
         ax = plt.gca()
 
-    ax.hlines(y=0, xmin=0, xmax=1, linestyle='dashed',
-              color='black', alpha=0.2)
+    ax.hlines(y=0,
+              xmin=0,
+              xmax=1,
+              linestyle='dashed',
+              color='black',
+              alpha=0.2)
     ax.bar(edges, top, width=resolution)
     ax.bar(edges, -bot, width=resolution)
     # Set some sensible defaults - these can be overridden after the fact,
@@ -86,7 +93,7 @@ def plot_calibration_curve(x_values,
                            pos_intensity=None,
                            all_intensity=None,
                            *,
-                           iqi=True,
+                           ici=True,
                            label=None,
                            ax=None):
     """
@@ -103,10 +110,10 @@ def plot_calibration_curve(x_values,
     ax.set_xlim(limits)
 
     estimate_label = 'Estimated Calibration'
-    if iqi:
-        iqi = compute_iqi(x_values, calibration, all_intensity)
-        estimate_label = f'Estimated Calibration (IQI {iqi:0.3f})'
-    
+    if ici:
+        ici = compute_ici(x_values, calibration, all_intensity)
+        estimate_label = f'Estimated Calibration (ICI {ici:0.3f})'
+
     lines, unit = [], (0, 1)
     lines.extend(ax.plot(unit, unit, 'k:', label='Perfect Calibration'))
     lines.extend(ax.plot(x_values, calibration, label=estimate_label))
@@ -116,26 +123,35 @@ def plot_calibration_curve(x_values,
         # perfectly
         pos_intensity /= all_intensity.max()
         all_intensity /= all_intensity.max()
-        lines.extend(ax.plot(x_values, pos_intensity, 'C1',
-                             alpha=0.4, label='Positive Intensity'))
-        lines.extend(ax.plot(x_values, all_intensity, 'C2',
-                             alpha=0.4, label='All Intensity'))
+        lines.extend(
+            ax.plot(x_values,
+                    pos_intensity,
+                    'C1',
+                    alpha=0.4,
+                    label='Positive Intensity'))
+        lines.extend(
+            ax.plot(x_values,
+                    all_intensity,
+                    'C2',
+                    alpha=0.4,
+                    label='All Intensity'))
     ax.legend(lines, [li.get_label() for li in lines], loc='best')
     ax.set_xlabel('Predicted Probability')
     ax.set_ylabel('Actual Probability')
     ax.yaxis.set_major_formatter(mpl.ticker.PercentFormatter(xmax=1.0))
     if label is not None:
         ax.set_title(f'{label}')
-       
+
     return ax
 
 
-def display_calibration(probs, actual,
+def display_calibration(probs,
+                        actual,
                         *,
                         figure=None,
                         bins=100,
                         label=None,
-                        iqi=True,
+                        ici=True,
                         kernel='gaussian',
                         bandwidth=0.1,
                         include_intensities=False):
@@ -158,8 +174,7 @@ def display_calibration(probs, actual,
         actual,
         resolution=resolution,
         kernel=kernel,
-        bandwidth=bandwidth
-    )
+        bandwidth=bandwidth)
 
     ax1 = plot_calibration_curve(
         x_values,
@@ -167,14 +182,10 @@ def display_calibration(probs, actual,
         pos_intensity=pos_intensity if include_intensities else None,
         all_intensity=all_intensity,
         label=label,
-        ax=ax1
-    )
+        ax=ax1)
     ax1.set_xlabel('')
-    ax2 = plot_histograms(
-        *histograms(probs, actual, bins=bins),
-        ax=ax2
-    )
-    ax2.set_box_aspect(1./3.)
+    ax2 = plot_histograms(*histograms(probs, actual, bins=bins), ax=ax2)
+    ax2.set_box_aspect(1. / 3.)
     ax1.xaxis.set_ticks_position('none')
     figure.tight_layout()
     return figure
