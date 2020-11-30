@@ -1,10 +1,52 @@
 """
 Model Calibration Tools
+
+Tools for displaying and recalibration model predictions.
+
+Usage:
+import mct
+
+# get your model predictions and true class labels
+preds, labels = ... 
+
+# display calibration of original model
+fig, estimate, ci = mct.display_calibration(preds,
+                                            labels,
+                                            bandwidth=0.05)
+plt.show(block=False)
+
+# Recalibrate predictions
+calibrator = mct.create_calibrator(estimate.orig, estimate.calibrated)
+calibrated = calibrator(preds)
+
+# Display recalibrated predictions
+plt.figure()
+mct.display_calibration(calibrated, labels, bandwidth=0.05)
+plt.show()
 """
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.neighbors import KernelDensity
+from collections import namedtuple
+from scipy import interpolate
+
+KdeResult = namedtuple('KdeResult',
+                       'orig calibrated ici pos_intensity all_intensity')
+"""Encapsulates the components of a KDE calibration.
+    
+    Args:
+        orig (array-like of float in [0,1]): a grid of original probabilities, usually equally spaced over the domain.
+        calibrated (array-like of float in [0,1]): the calibrated probabilities 
+            corresponding to those in `orig`
+        ici (float): the Integrated Calibration Index of `calibrated`, given 
+            `all_intensity`
+        pos_intensity (array-like of float): The intensity of elements with positive 
+            labels, computed at values in `orig`
+        all_intensity (array-like of float): The intensity of all elements, computed 
+            at values in `orig`.
+    """
 
 
 def histograms(probs, actual, bins=100):
@@ -20,52 +62,171 @@ def histograms(probs, actual, bins=100):
     return top, bot, edges, step
 
 
-def kde_calibration_curve(probs,
-                          actual,
-                          resolution=0.01,
-                          kernel='gaussian',
-                          bandwidth=0.1):
+def _compute_intensity(x_values, probs, kernel, bandwidth, **kde_args):
+    kde = KernelDensity(kernel=kernel, bandwidth=bandwidth, **kde_args)
+    kde.fit(probs.reshape(-1, 1))
+    log_density = kde.score_samples(x_values.reshape(-1, 1))
+
+    # We want the area under `intensity` to be the number of samples
+    intensity = np.exp(log_density) * len(probs)
+    return intensity
+
+
+def _compute_single_calibration(x_values, probs, actual, kernel, bandwidth,
+                                **kde_args):
+    positives = probs[actual == 1]
+    pos_intensity = _compute_intensity(x_values, positives, kernel, bandwidth)
+    all_intensity = _compute_intensity(x_values, probs, kernel, bandwidth,
+                                       **kde_args)
+    calibrated = pos_intensity / all_intensity
+    ici = compute_ici(x_values, calibrated, all_intensity)
+    return KdeResult(orig=x_values,
+                     calibrated=calibrated,
+                     ici=ici,
+                     pos_intensity=pos_intensity,
+                     all_intensity=all_intensity)
+
+
+def _resample_calibration(num_iterations, x_values, probs, actual, kernel,
+                          bandwidth, **kde_args):
+    calibrated = []
+    ici = []
+    pos_intensity = []
+    all_intensity = []
+    for _ in range(num_iterations):
+        indices = np.random.randint(probs.size, size=probs.size)
+        samp_probs = probs[indices]
+        samp_actual = actual[indices]
+        cal = _compute_single_calibration(x_values, samp_probs, samp_actual,
+                                          kernel, bandwidth, **kde_args)
+        calibrated.append(cal.calibrated)
+        ici.append(cal.ici)
+        pos_intensity.append(cal.pos_intensity)
+        all_intensity.append(cal.all_intensity)
+    return KdeResult(orig=x_values,
+                     calibrated=np.vstack(calibrated),
+                     ici=ici,
+                     pos_intensity=np.vstack(pos_intensity),
+                     all_intensity=np.vstack(all_intensity))
+
+
+def create_calibrator(orig, calibrated):
+    """Create a function to calibrate new predictions.
+    
+    The calibration function is a linear interpolation of `calibrated` vs `orig`.
+    Points outside the range of `orig` are interpolated as if (0,0) and (1,1)
+    are included points.
+
+    Args:
+        orig (array-like of float): Original model predictions in [0,1]
+        calibrated ([type]): Calibrated versions in [0,1] of `orig`.
+
+    Returns:
+        f(x) -> calibrated_x: a function returning calibrated versions 
+            `calibrated_x` of inputs `x`, where x is array-like of float 
+            in [0,1].
     """
-    Generate a calibration curve smoothed via KDE.
+
+    if orig[0] > 0:
+        orig = np.insert(orig, 0, 0)
+        calibrated = np.insert(calibrated, 0, 0)
+    if orig[-1] < 1:
+        orig = np.append(orig, 1.0)
+        calibrated = np.append(calibrated, 1.0)
+    return interpolate.interp1d(orig, calibrated, 'linear', bounds_error=True)
+
+
+def compute_kde_calibration(probs,
+                            actual,
+                            resolution=0.01,
+                            kernel='gaussian',
+                            n_resamples=None,
+                            bandwidth=0.1,
+                            alpha=None,
+                            **kde_args):
+    """Generate a calibration curve using kernel density estimation.
+
+    The curve is generated by computing the intensity (= probability density *
+    number of samples) of the positive-labeled instances, and dividing that by
+    the intensity of all instances.
+
+    Uses bootstrap resampling to estimate the confidence intervals, if
+    requested.
+
+    Args:
+        probs (array-like of float in [0,1]): model predicted probability for   
+            each instance.
+        actual (array-like of int in {0,1}): class label for each instance.
+        resolution (float, optional): Desired curve grid resolution. 
+            Defaults to 0.01.
+        kernel (str, optional): Any valid kernel name for 
+            sklearn.neighbors.KernelDensity. Defaults to 'gaussian'.
+        n_resamples (int, optional): Number of iterations of bootstrap
+            resampling for computing confidence intervals. If None (default),
+            a value is chosen such that the CIs are reasonably repeatable. 
+            Ignored if alpha=None.
+        bandwidth (float, optional): Desired kernel bandwidth. Defaults to 0.1.
+        alpha (float, optional): Desired significance level for the confidence 
+            intervals. Defaults to None.
+        **kde_args: Additional args for sklearn.neighbors.KernelDensity.
+
+    Returns:
+        A tuple containing:
+            a KdeResult of the best estimates
+            a KdeResult of the confidence intervals
+
     """
 
     x_min = max((0, np.amin(probs) - resolution))
     x_max = min((1, np.amax(probs) + resolution))
 
     x_values = np.arange(x_min, x_max, step=resolution)
-    # Calculate the curve for actual values
-    kde = KernelDensity(kernel=kernel, bandwidth=bandwidth)
-    positives = probs[actual == 1]
-    kde.fit(positives.reshape(-1, 1))
-    # `pos_density` has been normalized so that the area under np.exp(pos_density) is
-    # equal to one, but since we're using this to generate another curve, we
-    # need to de-normalize the curve
-    pos_density = kde.score_samples(x_values.reshape(-1, 1))
-    pos_intensity = np.exp(pos_density) * len(positives)
+    estimate = _compute_single_calibration(x_values,
+                                           probs,
+                                           actual,
+                                           kernel=kernel,
+                                           bandwidth=bandwidth,
+                                           **kde_args)
 
-    # Calculate the density for _all_ values
-    kde = KernelDensity(kernel=kernel, bandwidth=bandwidth)
-    kde.fit(probs.reshape(-1, 1))
-    all_density = kde.score_samples(x_values.reshape(-1, 1))
-    # See above note about density
-    all_intensity = np.exp(all_density) * len(probs)
+    calibration_ci = None
+    ici_ci = None
+    pos_ci = None
+    all_ci = None
 
-    # Now the estimated fraction is the ratio of positives to all
-    return (x_values, pos_intensity / all_intensity, pos_intensity,
-            all_intensity)
+    if alpha is not None:
+        if n_resamples is None:
+            # Choose a number of iterations such that there are about 50 points outside each end of the confidence interval.
+            n_resamples = int(100 / alpha)
+        samples = _resample_calibration(n_resamples, x_values, probs, actual,
+                                        kernel, bandwidth, **kde_args)
+        calibration_ci = np.quantile(samples.calibrated,
+                                     (alpha / 2, 1 - alpha / 2),
+                                     axis=0)
+        ici_ci = np.quantile(samples.ici, (alpha / 2, 1 - alpha / 2))
+        pos_ci = np.quantile(samples.pos_intensity, (alpha / 2, 1 - alpha / 2),
+                             axis=0)
+        all_ci = np.quantile(samples.all_intensity, (alpha / 2, 1 - alpha / 2),
+                             axis=0)
+
+    ci = KdeResult(orig=x_values,
+                   calibrated=calibration_ci,
+                   ici=ici_ci,
+                   pos_intensity=pos_ci,
+                   all_intensity=all_ci)
+    return (estimate, ci)
 
 
-def compute_ici(x_values, calibration, all_intensity):
-    ici = np.sum(all_intensity * np.abs(calibration - x_values)) / \
-        np.sum(all_intensity)
+def compute_ici(orig, calibrated, all_intensity):
+    ici = (np.sum(all_intensity * np.abs(calibrated - orig)) /
+           np.sum(all_intensity))
     return ici
 
 
 def plot_histograms(top, bot, edges, resolution, *, ax=None):
     """
-    Plots the two histograms generated by ``histograms``; the histogram of actual negatives
-    is plotted underneath the x axis while the histogram of actual positives is plotted
-    above.
+    Plots the two histograms generated by ``histograms``; the histogram of
+    actual negatives is plotted underneath the x axis while the histogram of
+    actual positives is plotted above.
     """
     if ax is None:
         ax = plt.gca()
@@ -88,18 +249,20 @@ def plot_histograms(top, bot, edges, resolution, *, ax=None):
     return ax
 
 
-def plot_calibration_curve(x_values,
-                           calibration,
+def plot_calibration_curve(orig,
+                           calibrated,
+                           calibrated_ci=None,
+                           ici=None,
+                           ici_ci=None,
                            pos_intensity=None,
                            all_intensity=None,
                            *,
-                           ici=True,
                            label=None,
                            ax=None):
     """
     Plots a calibration curve.
     """
-    inc_sources = pos_intensity is not None and all_intensity is not None
+    plot_intensities = pos_intensity is not None and all_intensity is not None
 
     if ax is None:
         ax = plt.gca()
@@ -109,36 +272,43 @@ def plot_calibration_curve(x_values,
     ax.set_ylim(limits)
     ax.set_xlim(limits)
 
-    estimate_label = 'Estimated Calibration'
-    if ici:
-        ici = compute_ici(x_values, calibration, all_intensity)
-        estimate_label = f'Estimated Calibration (ICI {ici:0.3f})'
+    ici_ci_label = ('' if ici is None else
+                    f' (ICI [{ici_ci[0]:0.3f}, {ici_ci[1]:0.3f}])')
+    ici_label = '' if ici is None else f' (ICI {ici:0.3f})'
 
-    lines, unit = [], (0, 1)
-    lines.extend(ax.plot(unit, unit, 'k:', label='Perfect Calibration'))
-    lines.extend(ax.plot(x_values, calibration, label=estimate_label))
+    ax.plot((0, 1), (0, 1), 'black', linewidth=0.2)
+    ax.plot(orig, calibrated, label=f'Estimated Calibration{ici_label}')
 
-    if inc_sources:
-        # We normalize the sources to the interval 0, 1 so the plots will align
-        # perfectly
+    if calibrated_ci is not None:
+        ax.fill_between(orig,
+                        calibrated_ci[0],
+                        calibrated_ci[1],
+                        color='C0',
+                        alpha=0.3,
+                        edgecolor='C0',
+                        label=f'Confidence Interval{ici_ci_label}')
+
+    if plot_intensities:
+        # We normalize the intensities to a max of 1, so they can plot on the same y axis as the calibration curve.
         pos_intensity /= all_intensity.max()
         all_intensity /= all_intensity.max()
-        lines.extend(
-            ax.plot(x_values,
-                    pos_intensity,
-                    'C1',
-                    alpha=0.4,
-                    label='Positive Intensity'))
-        lines.extend(
-            ax.plot(x_values,
-                    all_intensity,
-                    'C2',
-                    alpha=0.4,
-                    label='All Intensity'))
-    ax.legend(lines, [li.get_label() for li in lines], loc='best')
+
+        ax.plot(orig,
+                pos_intensity,
+                color='C1',
+                alpha=0.4,
+                label='Positive Intensity')
+
+        ax.plot(orig,
+                all_intensity,
+                color='C2',
+                alpha=0.4,
+                label='All Intensity')
+
+    ax.legend(loc='best')
     ax.set_xlabel('Predicted Probability')
     ax.set_ylabel('Actual Probability')
-    ax.yaxis.set_major_formatter(mpl.ticker.PercentFormatter(xmax=1.0))
+
     if label is not None:
         ax.set_title(f'{label}')
 
@@ -151,14 +321,37 @@ def display_calibration(probs,
                         figure=None,
                         bins=100,
                         label=None,
-                        ici=True,
+                        show_ici=True,
+                        alpha=0.05,
+                        n_resamples=None,
                         kernel='gaussian',
                         bandwidth=0.1,
-                        include_intensities=False):
+                        plot_intensities=False):
+    """Generates a calibration display.
+    
+    The display contains by default a calibration curve with confidence intervals, an 
+    estimate of the Integrated Calibration Index (ICI), and a histogram of 
+    the positive and negative values.
+
+    Args:
+        See `compute_kde_calibration` for `probs`, `actual`, `kernel`, 
+            `alpha`, `n_resamples`, `bandwidth`, and `plot_intensities`. 
+        
+        Args specific to this function are:
+        figure (Matplotlib figure, optional): Figure to use for plotting. 
+            If None (default) a new figure is created.
+        bins (int, optional): Number of bins for value histograms. Defaults to 100.
+        label (string, optional): Legend label for calibration curve. 
+            Defaults to None.
+        show_ici (bool, optional): If true (default), the ICI value is stated 
+            in the legend. 
+
+    Returns:
+        (figure, KdeResult, KdeResult): A tuple of the figure object, the
+            KDE estimate for the calibration curve, and the KDE estimate
+            for the confidence intervals.
     """
-    Generates and returns a matplotlib figure with two axes containing the
-    model's kde-smoothed calibration curve and histograms.
-    """
+
     resolution = 1.0 / bins
 
     if figure is None:
@@ -169,18 +362,21 @@ def display_calibration(probs,
         sharex=True,
         gridspec_kw=dict(height_ratios=(3, 1)),
     )
-    x_values, calibration, pos_intensity, all_intensity = kde_calibration_curve(
-        probs,
-        actual,
-        resolution=resolution,
-        kernel=kernel,
-        bandwidth=bandwidth)
+    estimate, ci = compute_kde_calibration(probs,
+                                           actual,
+                                           resolution=resolution,
+                                           kernel=kernel,
+                                           bandwidth=bandwidth,
+                                           alpha=alpha)
 
     ax1 = plot_calibration_curve(
-        x_values,
-        calibration,
-        pos_intensity=pos_intensity if include_intensities else None,
-        all_intensity=all_intensity,
+        orig=estimate.orig,
+        calibrated=estimate.calibrated,
+        calibrated_ci=ci.calibrated,
+        ici=estimate.ici if show_ici else None,
+        ici_ci=ci.ici if show_ici else None,
+        pos_intensity=estimate.pos_intensity if plot_intensities else None,
+        all_intensity=estimate.all_intensity if plot_intensities else None,
         label=label,
         ax=ax1)
     ax1.set_xlabel('')
@@ -188,4 +384,4 @@ def display_calibration(probs,
     ax2.set_box_aspect(1. / 3.)
     ax1.xaxis.set_ticks_position('none')
     figure.tight_layout()
-    return figure
+    return figure, estimate, ci
