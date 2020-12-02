@@ -272,7 +272,7 @@ def plot_calibration_curve(orig,
     ax.set_ylim(limits)
     ax.set_xlim(limits)
 
-    ici_ci_label = ('' if ici is None else
+    ici_ci_label = ('' if ici_ci is None else
                     f' (ICI [{ici_ci[0]:0.3f}, {ici_ci[1]:0.3f}])')
     ici_label = '' if ici is None else f' (ICI {ici:0.3f})'
 
