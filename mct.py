@@ -143,6 +143,7 @@ def compute_kde_calibration(probs,
                             n_resamples=None,
                             bandwidth=0.1,
                             alpha=None,
+                            pivot=True,
                             **kde_args):
     """Generate a calibration curve using kernel density estimation.
 
@@ -168,6 +169,8 @@ def compute_kde_calibration(probs,
         bandwidth (float, optional): Desired kernel bandwidth. Defaults to 0.1.
         alpha (float, optional): Desired significance level for the confidence 
             intervals. Defaults to None.
+        pivot (bool, optional): Whether to use pivot-based confidence intervals (True: recommended),
+            or empirical ones based on quantiles (False).
         **kde_args: Additional args for sklearn.neighbors.KernelDensity.
 
     Returns:
@@ -199,6 +202,7 @@ def compute_kde_calibration(probs,
             n_resamples = int(100 / alpha)
         samples = _resample_calibration(n_resamples, x_values, probs, actual,
                                         kernel, bandwidth, **kde_args)
+        # Quantiles (empirical) confident intervals
         calibration_ci = np.quantile(samples.calibrated,
                                      (alpha / 2, 1 - alpha / 2),
                                      axis=0)
@@ -207,12 +211,27 @@ def compute_kde_calibration(probs,
                              axis=0)
         all_ci = np.quantile(samples.all_intensity, (alpha / 2, 1 - alpha / 2),
                              axis=0)
-
-    ci = KdeResult(orig=x_values,
-                   calibrated=calibration_ci,
-                   ici=ici_ci,
-                   pos_intensity=pos_ci,
-                   all_intensity=all_ci)
+        
+    # Pivot based confident intervals
+    if pivot:
+        l = np.array([[0,1],[1,0]]) # revert help matrix
+        calibration_ci_pivot = 2*estimate.calibrated - l@calibration_ci
+        ici_ci_pivot = 2*estimate.ici - l@ici_ci
+        pos_ci_pivot = 2*estimate.pos_intensity - l@pos_ci
+        all_ci_pivot = 2*estimate.all_intensity - l@all_ci
+        
+        ci = KdeResult(orig=x_values,
+                       calibrated=calibration_ci_pivot,
+                       ici=ici_ci_pivot,
+                       pos_intensity=pos_ci_pivot,
+                       all_intensity=all_ci_pivot)
+    else:
+        ci = KdeResult(orig=x_values,
+                    calibrated=calibration_ci,
+                    ici=ici_ci,
+                    pos_intensity=pos_ci,
+                    all_intensity=all_ci)
+        
     return (estimate, ci)
 
 
@@ -323,6 +342,7 @@ def display_calibration(probs,
                         label=None,
                         show_ici=True,
                         alpha=0.05,
+                        pivot=True,
                         n_resamples=None,
                         kernel='gaussian',
                         bandwidth=0.1,
@@ -367,7 +387,9 @@ def display_calibration(probs,
                                            resolution=resolution,
                                            kernel=kernel,
                                            bandwidth=bandwidth,
-                                           alpha=alpha)
+                                           alpha=alpha,
+                                           pivot=pivot
+                                           )
 
     ax1 = plot_calibration_curve(
         orig=estimate.orig,
