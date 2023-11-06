@@ -31,6 +31,8 @@ import numpy as np
 from sklearn.neighbors import KernelDensity
 from collections import namedtuple
 from scipy import interpolate
+from joblib import delayed, Parallel
+from tqdm import tqdm
 
 KdeResult = namedtuple('KdeResult',
                        'orig calibrated ici pos_intensity all_intensity')
@@ -85,30 +87,30 @@ def _compute_single_calibration(x_values, probs, actual, kernel, bandwidth,
                      ici=ici,
                      pos_intensity=pos_intensity,
                      all_intensity=all_intensity)
-
+    
+def _resample_calibration_wrapper(*args):
+    cal = _compute_single_calibration(*args)
+    return cal.calibrated, cal.ici, cal.pos_intensity, cal.all_intensity
 
 def _resample_calibration(num_iterations, x_values, probs, actual, kernel,
-                          bandwidth, **kde_args):
-    calibrated = []
-    ici = []
-    pos_intensity = []
-    all_intensity = []
-    for _ in range(num_iterations):
-        indices = np.random.randint(probs.size, size=probs.size)
-        samp_probs = probs[indices]
-        samp_actual = actual[indices]
-        cal = _compute_single_calibration(x_values, samp_probs, samp_actual,
-                                          kernel, bandwidth, **kde_args)
-        calibrated.append(cal.calibrated)
-        ici.append(cal.ici)
-        pos_intensity.append(cal.pos_intensity)
-        all_intensity.append(cal.all_intensity)
+                          bandwidth,n_jobs=1,**kde_args):
+    calibrated,ici,pos_intensity,all_intensity = zip(*Parallel(n_jobs=n_jobs)(
+        delayed(_resample_calibration_wrapper)(
+            x_values,
+            probs[idx], 
+            actual[idx],
+            kernel,
+            bandwidth,
+            **kde_args) for idx in tqdm([
+            np.random.choice(probs.size, size=probs.size, replace=True) for _ in range(num_iterations)
+            ])
+        ))
+
     return KdeResult(orig=x_values,
                      calibrated=np.vstack(calibrated),
                      ici=ici,
                      pos_intensity=np.vstack(pos_intensity),
                      all_intensity=np.vstack(all_intensity))
-
 
 def create_calibrator(orig, calibrated):
     """Create a function to calibrate new predictions.
@@ -144,6 +146,7 @@ def compute_kde_calibration(probs,
                             bandwidth=0.1,
                             alpha=None,
                             pivot=True,
+                            n_jobs=1,
                             **kde_args):
     """Generate a calibration curve using kernel density estimation.
 
@@ -201,7 +204,7 @@ def compute_kde_calibration(probs,
             # Choose a number of iterations such that there are about 50 points outside each end of the confidence interval.
             n_resamples = int(100 / alpha)
         samples = _resample_calibration(n_resamples, x_values, probs, actual,
-                                        kernel, bandwidth, **kde_args)
+                                        kernel, bandwidth,n_jobs=n_jobs, **kde_args)
         # Quantiles (empirical) confident intervals
         calibration_ci = np.quantile(samples.calibrated,
                                      (alpha / 2, 1 - alpha / 2),
@@ -346,7 +349,8 @@ def display_calibration(probs,
                         n_resamples=None,
                         kernel='gaussian',
                         bandwidth=0.1,
-                        plot_intensities=False):
+                        plot_intensities=False,
+                        n_jobs=1):
     """Generates a calibration display.
     
     The display contains by default a calibration curve with confidence intervals, an 
@@ -388,7 +392,9 @@ def display_calibration(probs,
                                            kernel=kernel,
                                            bandwidth=bandwidth,
                                            alpha=alpha,
-                                           pivot=pivot
+                                           pivot=pivot,
+                                           n_resamples=n_resamples,
+                                           n_jobs=n_jobs
                                            )
 
     ax1 = plot_calibration_curve(
