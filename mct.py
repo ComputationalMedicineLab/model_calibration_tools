@@ -219,7 +219,7 @@ def compute_kde_calibration(probs,
     if pivot:
         l = np.array([[0,1],[1,0]]) # revert help matrix
         calibration_ci_pivot = 2*estimate.calibrated - l@calibration_ci
-        ici_ci_pivot = 2*estimate.ici - l@ici_ci
+        ici_ci_pivot = np.minimum(np.maximum(2*estimate.ici - l@ici_ci, 0),1) # Ensure ici is in [0,1]
         pos_ci_pivot = 2*estimate.pos_intensity - l@pos_ci
         all_ci_pivot = 2*estimate.all_intensity - l@all_ci
         
