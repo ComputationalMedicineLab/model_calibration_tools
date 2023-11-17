@@ -23,7 +23,7 @@ calibrated = calibrator(preds)
 plt.figure()
 mct.display_calibration(calibrated, labels, bandwidth=0.05)
 plt.show()
-"""
+""" 
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -259,8 +259,8 @@ def plot_histograms(top, bot, edges, resolution, *, ax=None):
               linestyle='dashed',
               color='black',
               alpha=0.2)
-    ax.bar(edges, top, width=resolution)
-    ax.bar(edges, -bot, width=resolution)
+    ax.bar(edges, top, width=resolution, color='C2') #positives
+    ax.bar(edges, -bot, width=resolution, color='C3') # negatives
     # Set some sensible defaults - these can be overridden after the fact,
     # since we return the axes object
     ax.set_xlim((-0.05, 1.05))
@@ -411,5 +411,6 @@ def display_calibration(probs,
     ax2 = plot_histograms(*histograms(probs, actual, bins=bins), ax=ax2)
     ax2.set_box_aspect(1. / 3.)
     ax1.xaxis.set_ticks_position('none')
+    figure.subplots_adjust(hspace=0)
     figure.tight_layout()
     return figure, estimate, ci
