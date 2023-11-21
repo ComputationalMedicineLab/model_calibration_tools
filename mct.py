@@ -259,8 +259,8 @@ def plot_histograms(top, bot, edges, resolution, *, ax=None):
               linestyle='dashed',
               color='black',
               alpha=0.2)
-    ax.bar(edges, top, width=resolution, color='C2') #positives
-    ax.bar(edges, -bot, width=resolution, color='C3') # negatives
+    ax.bar(edges, top, width=resolution) #positives
+    ax.bar(edges, -bot, width=resolution) # negatives
     # Set some sensible defaults - these can be overridden after the fact,
     # since we return the axes object
     ax.set_xlim((-0.05, 1.05))
