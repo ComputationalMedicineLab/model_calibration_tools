@@ -35,7 +35,7 @@ from joblib import delayed, Parallel
 from tqdm import tqdm
 
 KdeResult = namedtuple('KdeResult',
-                       'orig calibrated ici pos_intensity all_intensity')
+                       'orig calibrated ici pos_intensity all_intensity e_max e_90 e_50')
 """Encapsulates the components of a KDE calibration.
     
     Args:
@@ -82,19 +82,27 @@ def _compute_single_calibration(x_values, probs, actual, kernel, bandwidth,
                                        **kde_args)
     calibrated = pos_intensity / all_intensity
     ici = compute_ici(x_values, calibrated, all_intensity)
+    e_max = compute_cal_error(x_values, calibrated, 'max') # E_max
+    e_50 = compute_cal_error(x_values, calibrated, 50) # E_50
+    e_90 = compute_cal_error(x_values, calibrated, 90) # E_90
+
     return KdeResult(orig=x_values,
                      calibrated=calibrated,
                      ici=ici,
                      pos_intensity=pos_intensity,
-                     all_intensity=all_intensity)
+                     all_intensity=all_intensity,
+                     e_max=e_max,
+                     e_90=e_90,
+                     e_50=e_50
+                     )
     
 def _resample_calibration_wrapper(*args):
     cal = _compute_single_calibration(*args)
-    return cal.calibrated, cal.ici, cal.pos_intensity, cal.all_intensity
+    return cal.calibrated, cal.ici, cal.pos_intensity, cal.all_intensity, cal.e_max, cal.e_90, cal.e_50
 
 def _resample_calibration(num_iterations, x_values, probs, actual, kernel,
                           bandwidth,n_jobs=1,**kde_args):
-    calibrated,ici,pos_intensity,all_intensity = zip(*Parallel(n_jobs=n_jobs)(
+    calibrated,ici,pos_intensity,all_intensity, e_max, e_90, e_50 = zip(*Parallel(n_jobs=n_jobs)(
         delayed(_resample_calibration_wrapper)(
             x_values,
             probs[idx], 
@@ -110,7 +118,10 @@ def _resample_calibration(num_iterations, x_values, probs, actual, kernel,
                      calibrated=np.vstack(calibrated),
                      ici=ici,
                      pos_intensity=np.vstack(pos_intensity),
-                     all_intensity=np.vstack(all_intensity))
+                     all_intensity=np.vstack(all_intensity),
+                     e_max=e_max,
+                     e_90=e_90,
+                     e_50=e_50)
 
 def create_calibrator(orig, calibrated):
     """Create a function to calibrate new predictions.
@@ -145,7 +156,6 @@ def compute_kde_calibration(probs,
                             n_resamples=None,
                             bandwidth=0.1,
                             alpha=None,
-                            pivot=True,
                             n_jobs=1,
                             **kde_args):
     """Generate a calibration curve using kernel density estimation.
@@ -172,8 +182,6 @@ def compute_kde_calibration(probs,
         bandwidth (float, optional): Desired kernel bandwidth. Defaults to 0.1.
         alpha (float, optional): Desired significance level for the confidence 
             intervals. Defaults to None.
-        pivot (bool, optional): Whether to use pivot-based confidence intervals (True: recommended),
-            or empirical ones based on quantiles (False).
         **kde_args: Additional args for sklearn.neighbors.KernelDensity.
 
     Returns:
@@ -214,26 +222,22 @@ def compute_kde_calibration(probs,
                              axis=0)
         all_ci = np.quantile(samples.all_intensity, (alpha / 2, 1 - alpha / 2),
                              axis=0)
+        e_max_ci = np.quantile(samples.e_max, (alpha / 2, 1 - alpha / 2),
+                             axis=0)
+        e_90_ci = np.quantile(samples.e_90, (alpha / 2, 1 - alpha / 2),
+                             axis=0)
+        e_50_ci = np.quantile(samples.e_50, (alpha / 2, 1 - alpha / 2),
+                             axis=0)
         
-    # Pivot based confident intervals
-    if pivot:
-        l = np.array([[0,1],[1,0]]) # revert help matrix
-        calibration_ci_pivot = 2*estimate.calibrated - l@calibration_ci
-        ici_ci_pivot = np.minimum(np.maximum(2*estimate.ici - l@ici_ci, 0),1) # Ensure ici is in [0,1]
-        pos_ci_pivot = 2*estimate.pos_intensity - l@pos_ci
-        all_ci_pivot = 2*estimate.all_intensity - l@all_ci
-        
-        ci = KdeResult(orig=x_values,
-                       calibrated=calibration_ci_pivot,
-                       ici=ici_ci_pivot,
-                       pos_intensity=pos_ci_pivot,
-                       all_intensity=all_ci_pivot)
-    else:
         ci = KdeResult(orig=x_values,
                     calibrated=calibration_ci,
                     ici=ici_ci,
                     pos_intensity=pos_ci,
-                    all_intensity=all_ci)
+                    all_intensity=all_ci,
+                    e_max=e_max_ci,
+                    e_90=e_90_ci,
+                    e_50=e_50_ci
+                    )
         
     return (estimate, ci)
 
@@ -243,6 +247,13 @@ def compute_ici(orig, calibrated, all_intensity):
            np.sum(all_intensity))
     return ici
 
+def compute_cal_error(orig, calibrated, error_type='max'):
+    if error_type == 'max':
+        return np.max(abs(orig-calibrated))
+    elif isinstance(error_type, int):
+        return np.percentile(a=abs(orig-calibrated), q=error_type)
+    else:
+        raise ValueError('Only `max` (E_max) or integer (E_`percentile`, eg E_50 or E_90) allowed.')
 
 def plot_histograms(top, bot, edges, resolution, *, ax=None):
     """
@@ -345,7 +356,6 @@ def display_calibration(probs,
                         label=None,
                         show_ici=True,
                         alpha=0.05,
-                        pivot=True,
                         n_resamples=None,
                         kernel='gaussian',
                         bandwidth=0.1,
@@ -392,7 +402,6 @@ def display_calibration(probs,
                                            kernel=kernel,
                                            bandwidth=bandwidth,
                                            alpha=alpha,
-                                           pivot=pivot,
                                            n_resamples=n_resamples,
                                            n_jobs=n_jobs
                                            )
