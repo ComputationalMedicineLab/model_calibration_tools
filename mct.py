@@ -71,6 +71,13 @@ def _compute_intensity(x_values, probs, kernel, bandwidth, **kde_args):
 
     # We want the area under `intensity` to be the number of samples
     intensity = np.exp(log_density) * len(probs)
+    
+    # TODO: Figure out a way to disregard regions on the predicted probability 
+    # line that have a very low data density (theshold ~ 10/resolution; maybe
+    # 5 of each label class). Estimations of intensity there are unreliable and 
+    # give problems computing ICI and using calibrators to correct probabilities
+    # that fall in those regions.
+    
     return intensity
 
 
@@ -237,7 +244,7 @@ def compute_kde_calibration(probs,
                     e_max=e_max_ci,
                     e_90=e_90_ci,
                     e_50=e_50_ci
-                    )
+                    ) 
         
     return (estimate, ci)
 
