@@ -23,7 +23,7 @@ calibrated = calibrator(preds)
 plt.figure()
 mct.display_calibration(calibrated, labels, bandwidth=0.05)
 plt.show()
-"""
+""" 
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -31,9 +31,11 @@ import numpy as np
 from sklearn.neighbors import KernelDensity
 from collections import namedtuple
 from scipy import interpolate
+from joblib import delayed, Parallel
+from tqdm import tqdm
 
 KdeResult = namedtuple('KdeResult',
-                       'orig calibrated ici pos_intensity all_intensity')
+                       'orig calibrated ici pos_intensity all_intensity e_max e_90 e_50')
 """Encapsulates the components of a KDE calibration.
     
     Args:
@@ -54,7 +56,7 @@ def histograms(probs, actual, bins=100):
     Calculates two histograms over [0, 1] by partitioning `probs` with `actual`
     and sorting each partition into `bins` sub-intervals.
     """
-    actual = actual.astype(np.bool)
+    actual = actual.astype(bool)
     edges, step = np.linspace(0., 1., bins, retstep=True, endpoint=False)
     idx = np.digitize(probs, edges) - 1
     top = np.bincount(idx, weights=actual, minlength=bins)
@@ -69,6 +71,13 @@ def _compute_intensity(x_values, probs, kernel, bandwidth, **kde_args):
 
     # We want the area under `intensity` to be the number of samples
     intensity = np.exp(log_density) * len(probs)
+    
+    # TODO: Figure out a way to disregard regions on the predicted probability 
+    # line that have a very low data density (theshold ~ 10/resolution; maybe
+    # 5 of each label class). Estimations of intensity there are unreliable and 
+    # give problems computing ICI and using calibrators to correct probabilities
+    # that fall in those regions.
+    
     return intensity
 
 
@@ -80,35 +89,46 @@ def _compute_single_calibration(x_values, probs, actual, kernel, bandwidth,
                                        **kde_args)
     calibrated = pos_intensity / all_intensity
     ici = compute_ici(x_values, calibrated, all_intensity)
+    e_max = compute_cal_error(x_values, calibrated, 'max') # E_max
+    e_50 = compute_cal_error(x_values, calibrated, 50) # E_50
+    e_90 = compute_cal_error(x_values, calibrated, 90) # E_90
+
     return KdeResult(orig=x_values,
                      calibrated=calibrated,
                      ici=ici,
                      pos_intensity=pos_intensity,
-                     all_intensity=all_intensity)
-
+                     all_intensity=all_intensity,
+                     e_max=e_max,
+                     e_90=e_90,
+                     e_50=e_50
+                     )
+    
+def _resample_calibration_wrapper(*args):
+    cal = _compute_single_calibration(*args)
+    return cal.calibrated, cal.ici, cal.pos_intensity, cal.all_intensity, cal.e_max, cal.e_90, cal.e_50
 
 def _resample_calibration(num_iterations, x_values, probs, actual, kernel,
-                          bandwidth, **kde_args):
-    calibrated = []
-    ici = []
-    pos_intensity = []
-    all_intensity = []
-    for _ in range(num_iterations):
-        indices = np.random.randint(probs.size, size=probs.size)
-        samp_probs = probs[indices]
-        samp_actual = actual[indices]
-        cal = _compute_single_calibration(x_values, samp_probs, samp_actual,
-                                          kernel, bandwidth, **kde_args)
-        calibrated.append(cal.calibrated)
-        ici.append(cal.ici)
-        pos_intensity.append(cal.pos_intensity)
-        all_intensity.append(cal.all_intensity)
+                          bandwidth,n_jobs=1,**kde_args):
+    calibrated,ici,pos_intensity,all_intensity, e_max, e_90, e_50 = zip(*Parallel(n_jobs=n_jobs)(
+        delayed(_resample_calibration_wrapper)(
+            x_values,
+            probs[idx], 
+            actual[idx],
+            kernel,
+            bandwidth,
+            **kde_args) for idx in tqdm([
+            np.random.choice(probs.size, size=probs.size, replace=True) for _ in range(num_iterations)
+            ])
+        ))
+
     return KdeResult(orig=x_values,
                      calibrated=np.vstack(calibrated),
                      ici=ici,
                      pos_intensity=np.vstack(pos_intensity),
-                     all_intensity=np.vstack(all_intensity))
-
+                     all_intensity=np.vstack(all_intensity),
+                     e_max=e_max,
+                     e_90=e_90,
+                     e_50=e_50)
 
 def create_calibrator(orig, calibrated):
     """Create a function to calibrate new predictions.
@@ -143,6 +163,7 @@ def compute_kde_calibration(probs,
                             n_resamples=None,
                             bandwidth=0.1,
                             alpha=None,
+                            n_jobs=1,
                             **kde_args):
     """Generate a calibration curve using kernel density estimation.
 
@@ -198,7 +219,8 @@ def compute_kde_calibration(probs,
             # Choose a number of iterations such that there are about 50 points outside each end of the confidence interval.
             n_resamples = int(100 / alpha)
         samples = _resample_calibration(n_resamples, x_values, probs, actual,
-                                        kernel, bandwidth, **kde_args)
+                                        kernel, bandwidth,n_jobs=n_jobs, **kde_args)
+        # Quantiles (empirical) confident intervals
         calibration_ci = np.quantile(samples.calibrated,
                                      (alpha / 2, 1 - alpha / 2),
                                      axis=0)
@@ -207,12 +229,23 @@ def compute_kde_calibration(probs,
                              axis=0)
         all_ci = np.quantile(samples.all_intensity, (alpha / 2, 1 - alpha / 2),
                              axis=0)
-
-    ci = KdeResult(orig=x_values,
-                   calibrated=calibration_ci,
-                   ici=ici_ci,
-                   pos_intensity=pos_ci,
-                   all_intensity=all_ci)
+        e_max_ci = np.quantile(samples.e_max, (alpha / 2, 1 - alpha / 2),
+                             axis=0)
+        e_90_ci = np.quantile(samples.e_90, (alpha / 2, 1 - alpha / 2),
+                             axis=0)
+        e_50_ci = np.quantile(samples.e_50, (alpha / 2, 1 - alpha / 2),
+                             axis=0)
+        
+        ci = KdeResult(orig=x_values,
+                    calibrated=calibration_ci,
+                    ici=ici_ci,
+                    pos_intensity=pos_ci,
+                    all_intensity=all_ci,
+                    e_max=e_max_ci,
+                    e_90=e_90_ci,
+                    e_50=e_50_ci
+                    ) 
+        
     return (estimate, ci)
 
 
@@ -221,6 +254,13 @@ def compute_ici(orig, calibrated, all_intensity):
            np.sum(all_intensity))
     return ici
 
+def compute_cal_error(orig, calibrated, error_type='max'):
+    if error_type == 'max':
+        return np.max(abs(orig-calibrated))
+    elif isinstance(error_type, int):
+        return np.percentile(a=abs(orig-calibrated), q=error_type)
+    else:
+        raise ValueError('Only `max` (E_max) or integer (E_`percentile`, eg E_50 or E_90) allowed.')
 
 def plot_histograms(top, bot, edges, resolution, *, ax=None):
     """
@@ -237,8 +277,8 @@ def plot_histograms(top, bot, edges, resolution, *, ax=None):
               linestyle='dashed',
               color='black',
               alpha=0.2)
-    ax.bar(edges, top, width=resolution)
-    ax.bar(edges, -bot, width=resolution)
+    ax.bar(edges, top, width=resolution) #positives
+    ax.bar(edges, -bot, width=resolution) # negatives
     # Set some sensible defaults - these can be overridden after the fact,
     # since we return the axes object
     ax.set_xlim((-0.05, 1.05))
@@ -326,7 +366,8 @@ def display_calibration(probs,
                         n_resamples=None,
                         kernel='gaussian',
                         bandwidth=0.1,
-                        plot_intensities=False):
+                        plot_intensities=False,
+                        n_jobs=1):
     """Generates a calibration display.
     
     The display contains by default a calibration curve with confidence intervals, an 
@@ -367,7 +408,10 @@ def display_calibration(probs,
                                            resolution=resolution,
                                            kernel=kernel,
                                            bandwidth=bandwidth,
-                                           alpha=alpha)
+                                           alpha=alpha,
+                                           n_resamples=n_resamples,
+                                           n_jobs=n_jobs
+                                           )
 
     ax1 = plot_calibration_curve(
         orig=estimate.orig,
@@ -383,5 +427,6 @@ def display_calibration(probs,
     ax2 = plot_histograms(*histograms(probs, actual, bins=bins), ax=ax2)
     ax2.set_box_aspect(1. / 3.)
     ax1.xaxis.set_ticks_position('none')
+    figure.subplots_adjust(hspace=0)
     figure.tight_layout()
     return figure, estimate, ci
